@@ -72,7 +72,7 @@ def build_profile_url(platform: str, account: str) -> str:
     if platform == "twitter":
         return f"https://x.com/{account}"
     if platform == "instagram":
-        return f"https://www.instagram.com/{account}/"
+        return f"https://www.instagram.com/{account}/posts/"
     raise ValueError(f"Unsupported platform: {platform}")
 
 

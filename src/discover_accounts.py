@@ -148,16 +148,38 @@ def build_profile_url(platform: str, account: str) -> str:
     if platform == "twitter":
         return f"https://x.com/{account}"
     if platform == "instagram":
-        return f"https://www.instagram.com/{account}/"
+        return f"https://www.instagram.com/{account}/posts/"
     raise ValueError(f"Unsupported platform: {platform}")
 
 
-def is_probe_success(data: Optional[List], error: Optional[str]) -> bool:
-    if error:
-        return False
-    if data is None:
-        return False
-    return len(data) > 0
+def run_probe_command(
+    platform: str,
+    account: str,
+    cookies_file: Optional[Path],
+    timeout_seconds: int,
+    per_account_limit: int,
+) -> Tuple[bool, str]:
+    url = build_profile_url(platform, account)
+    cmd = ["gallery-dl", "--range", f"1-{per_account_limit}", "--simulate"]
+    if cookies_file and cookies_file.exists():
+        cmd.extend(["--cookies", str(cookies_file)])
+    cmd.append(url)
+    try:
+        result = subprocess.run(
+            cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"probe timeout after {timeout_seconds}s"
+    if result.returncode == 0:
+        return True, ""
+    error_text = (result.stderr or result.stdout or "").strip()
+    if not error_text:
+        error_text = f"probe failed with return code {result.returncode}"
+    return False, error_text[:500]
 
 
 def probe_accounts(
@@ -176,17 +198,14 @@ def probe_accounts(
         return success, errors
 
     def run_one(account: str) -> Tuple[str, bool, str]:
-        url = build_profile_url(platform, account)
-        data, error = run_dump_json(
-            url=url,
+        ok, message = run_probe_command(
+            platform=platform,
+            account=account,
             cookies_file=cookies_file,
-            limit=per_account_limit,
             timeout_seconds=timeout_seconds,
+            per_account_limit=per_account_limit,
         )
-        if is_probe_success(data, error):
-            return account, True, ""
-        message = (error or "empty result").strip()
-        return account, False, message[:500]
+        return account, ok, message
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
         futures = [executor.submit(run_one, account) for account in candidates]
@@ -355,6 +374,7 @@ def choose_from_validated_candidates(
     preferred: List[str],
     validated: List[str],
     target_count: int,
+    allow_unvalidated_fallback: bool = True,
 ) -> List[str]:
     if target_count <= 0:
         return []
@@ -377,13 +397,14 @@ def choose_from_validated_candidates(
         if len(selected) >= target_count:
             return selected
 
-    for account in preferred:
-        if account in seen:
-            continue
-        selected.append(account)
-        seen.add(account)
-        if len(selected) >= target_count:
-            return selected
+    if allow_unvalidated_fallback:
+        for account in preferred:
+            if account in seen:
+                continue
+            selected.append(account)
+            seen.add(account)
+            if len(selected) >= target_count:
+                return selected
 
     return selected[:target_count]
 
@@ -497,6 +518,8 @@ def main() -> None:
         args.timeout_seconds,
     )
     x_accounts, ig_accounts = choose_accounts(x_counter, ig_counter, args.target_total)
+    x_target = args.target_total // 2
+    ig_target = args.target_total - x_target
 
     ig_candidate_ranked = [handle for handle, _ in ig_counter.most_common(300)]
     ig_probe_candidates = list(
@@ -510,12 +533,21 @@ def main() -> None:
         max_workers=args.ig_probe_max_workers,
         per_account_limit=args.ig_probe_limit,
     )
-    ig_target = args.target_total - (args.target_total // 2)
     ig_accounts = choose_from_validated_candidates(
         preferred=ig_accounts + ig_probe_candidates,
         validated=ig_probe_success,
         target_count=ig_target,
+        allow_unvalidated_fallback=False,
     )
+    ig_shortfall = max(0, ig_target - len(ig_accounts))
+    if ig_shortfall > 0:
+        x_pool = x_accounts + [handle for handle, _ in x_counter.most_common(300)] + FALLBACK_X_ACCOUNTS
+        x_accounts = choose_from_validated_candidates(
+            preferred=x_pool,
+            validated=x_pool,
+            target_count=x_target + ig_shortfall,
+            allow_unvalidated_fallback=True,
+        )
 
     write_accounts_yaml(
         output_path=args.output,
