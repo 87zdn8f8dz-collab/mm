@@ -401,6 +401,10 @@ def build_text_record(payload: Dict[str, str], asset: Asset) -> str:
 
 def organize_assets(kept_assets: List[Asset], archive_root: Path) -> None:
     text_root = archive_root / TEXT_ARCHIVE_DIR
+    text_root.mkdir(parents=True, exist_ok=True)
+    for platform_dir_name in PLATFORM_ARCHIVE_MAP.values():
+        (archive_root / platform_dir_name).mkdir(parents=True, exist_ok=True)
+        (text_root / platform_dir_name).mkdir(parents=True, exist_ok=True)
 
     caption_hashes: set[str] = set()
 
