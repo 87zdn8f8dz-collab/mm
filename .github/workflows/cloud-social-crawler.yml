@@ -1,0 +1,77 @@
+name: cloud-social-crawler
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */6 * * *"
+
+concurrency:
+  group: cloud-social-crawler
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Write accounts config from secret (optional)
+        shell: bash
+        env:
+          ACCOUNTS_YAML_B64: ${{ secrets.ACCOUNTS_YAML_B64 }}
+        run: |
+          if [[ -n "${ACCOUNTS_YAML_B64}" ]]; then
+            echo "$ACCOUNTS_YAML_B64" | base64 --decode > config/accounts.yaml
+            echo "Use config/accounts.yaml from secret"
+          else
+            echo "Use config/accounts.example.yaml"
+          fi
+
+      - name: Write cookies from secret (optional)
+        shell: bash
+        env:
+          GALLERY_DL_COOKIES_B64: ${{ secrets.GALLERY_DL_COOKIES_B64 }}
+        run: |
+          if [[ -n "${GALLERY_DL_COOKIES_B64}" ]]; then
+            echo "$GALLERY_DL_COOKIES_B64" | base64 --decode > /tmp/gallery-dl-cookies.txt
+            echo "GALLERY_DL_COOKIES_FILE=/tmp/gallery-dl-cookies.txt" >> "$GITHUB_ENV"
+            echo "cookies enabled"
+          else
+            echo "cookies not provided"
+          fi
+
+      - name: Run pipeline
+        run: |
+          CONFIG_PATH="config/accounts.example.yaml"
+          if [[ -f "config/accounts.yaml" ]]; then
+            CONFIG_PATH="config/accounts.yaml"
+          fi
+          python src/pipeline.py --config "$CONFIG_PATH" --data-root data
+
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: social-materials-${{ github.run_id }}
+          path: |
+            data/archive
+            data/rejected
+          if-no-files-found: warn
+          retention-days: 30
