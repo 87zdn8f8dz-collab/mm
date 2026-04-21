@@ -397,6 +397,10 @@ def run_pipeline(config_path: Path, data_root: Path) -> None:
         print(f"[done] 归档目录: {archive_root}")
         print(f"[done] 剔除目录: {rejected_root}")
 
+        fail_on_empty = os.environ.get("FAIL_ON_EMPTY", "1").strip().lower() in {"1", "true", "yes"}
+        if fail_on_empty and len(kept_assets) == 0:
+            raise RuntimeError("抓取结果为空：请检查账号配置和 cookies 登录态是否有效。")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="云端社媒素材抓取+去重+归档")
