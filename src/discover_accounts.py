@@ -209,41 +209,47 @@ def choose_accounts(x_counter: Counter, ig_counter: Counter, target_total: int) 
     x_selected = x_ranked[:x_target]
     ig_selected = ig_ranked[:ig_target]
 
-    x_index = len(x_selected)
-    ig_index = len(ig_selected)
-    while len(x_selected) + len(ig_selected) < target_total:
-        progressed = False
-        if len(x_selected) <= len(ig_selected):
-            if x_index < len(x_ranked):
-                x_selected.append(x_ranked[x_index])
-                x_index += 1
-                progressed = True
-            elif ig_index < len(ig_ranked):
-                ig_selected.append(ig_ranked[ig_index])
-                ig_index += 1
-                progressed = True
-        else:
-            if ig_index < len(ig_ranked):
-                ig_selected.append(ig_ranked[ig_index])
-                ig_index += 1
-                progressed = True
-            elif x_index < len(x_ranked):
-                x_selected.append(x_ranked[x_index])
-                x_index += 1
-                progressed = True
-        if not progressed:
-            break
-
     x_existing = set(x_selected)
     ig_existing = set(ig_selected)
     fallback_x_index = 0
     fallback_ig_index = 0
+
+    while len(x_selected) < x_target:
+        progressed = False
+        while fallback_x_index < len(FALLBACK_X_ACCOUNTS):
+            account = FALLBACK_X_ACCOUNTS[fallback_x_index]
+            fallback_x_index += 1
+            if account in x_existing:
+                continue
+            x_selected.append(account)
+            x_existing.add(account)
+            progressed = True
+            break
+        if not progressed:
+            break
+
+    while len(ig_selected) < ig_target:
+        progressed = False
+        while fallback_ig_index < len(FALLBACK_IG_ACCOUNTS):
+            account = FALLBACK_IG_ACCOUNTS[fallback_ig_index]
+            fallback_ig_index += 1
+            if account in ig_existing:
+                continue
+            ig_selected.append(account)
+            ig_existing.add(account)
+            progressed = True
+            break
+        if not progressed:
+            break
+
+    x_extra_index = len(x_selected)
+    ig_extra_index = len(ig_selected)
     while len(x_selected) + len(ig_selected) < target_total:
         progressed = False
         if len(x_selected) <= len(ig_selected):
-            while fallback_x_index < len(FALLBACK_X_ACCOUNTS):
-                account = FALLBACK_X_ACCOUNTS[fallback_x_index]
-                fallback_x_index += 1
+            while x_extra_index < len(x_ranked):
+                account = x_ranked[x_extra_index]
+                x_extra_index += 1
                 if account in x_existing:
                     continue
                 x_selected.append(account)
@@ -261,9 +267,9 @@ def choose_accounts(x_counter: Counter, ig_counter: Counter, target_total: int) 
                     progressed = True
                     break
         else:
-            while fallback_ig_index < len(FALLBACK_IG_ACCOUNTS):
-                account = FALLBACK_IG_ACCOUNTS[fallback_ig_index]
-                fallback_ig_index += 1
+            while ig_extra_index < len(ig_ranked):
+                account = ig_ranked[ig_extra_index]
+                ig_extra_index += 1
                 if account in ig_existing:
                     continue
                 ig_selected.append(account)
