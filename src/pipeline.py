@@ -400,7 +400,7 @@ def build_text_record(payload: Dict[str, str], asset: Asset) -> str:
 
 
 def ensure_placeholder(directory: Path) -> None:
-    placeholder = directory / ".keep"
+    placeholder = directory / "KEEP.txt"
     if not placeholder.exists():
         placeholder.write_text("placeholder\n", encoding="utf-8")
 
