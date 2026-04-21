@@ -73,8 +73,9 @@ jobs:
               --target-total 50
               --per-query-limit 20
               --timeout-seconds 40
-              --max-items-per-account 10
-              --command-timeout-seconds 90
+              --max-items-per-account 8
+              --command-timeout-seconds 60
+              --max-workers 6
               --sleep-request-seconds 1.5
             )
             if [[ -f /tmp/gallery-dl-cookies.txt ]]; then

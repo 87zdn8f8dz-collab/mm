@@ -293,6 +293,7 @@ def write_accounts_yaml(
     max_items_per_account: int,
     sleep_request_seconds: float,
     command_timeout_seconds: int,
+    max_workers: int,
 ) -> None:
     payload = {
         "twitter": x_accounts,
@@ -301,6 +302,7 @@ def write_accounts_yaml(
             "max_items_per_account": max_items_per_account,
             "sleep_request_seconds": sleep_request_seconds,
             "command_timeout_seconds": command_timeout_seconds,
+            "max_workers": max_workers,
         },
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,6 +342,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-items-per-account", type=int, default=20)
     parser.add_argument("--sleep-request-seconds", type=float, default=1.5)
     parser.add_argument("--command-timeout-seconds", type=int, default=180)
+    parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--cookies-file", type=Path, default=None)
     parser.add_argument("--x-keywords", type=str, default="|".join(DEFAULT_X_KEYWORDS))
     parser.add_argument("--ig-tags", type=str, default="|".join(DEFAULT_IG_TAGS))
@@ -372,6 +375,7 @@ def main() -> None:
         max_items_per_account=args.max_items_per_account,
         sleep_request_seconds=args.sleep_request_seconds,
         command_timeout_seconds=args.command_timeout_seconds,
+        max_workers=args.max_workers,
     )
     write_discovery_report(
         report_path=args.report,

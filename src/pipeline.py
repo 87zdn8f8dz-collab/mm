@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -75,17 +76,18 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
     max_items = int(crawl_config.get("max_items_per_account", 40))
     sleep_request_seconds = float(crawl_config.get("sleep_request_seconds", 1.2))
     command_timeout_seconds = int(crawl_config.get("command_timeout_seconds", 180))
+    max_workers = int(crawl_config.get("max_workers", 4))
     cookies_file = os.environ.get("GALLERY_DL_COOKIES_FILE")
 
     if shutil.which("gallery-dl") is None:
         raise RuntimeError("gallery-dl 未安装，请先执行: pip install -r requirements.txt")
 
+    tasks: List[Tuple[str, str, List[str], str]] = []
     for platform, accounts in account_map.items():
         for account in accounts:
             output_dir = raw_root / platform / account
             output_dir.mkdir(parents=True, exist_ok=True)
             profile_url = build_profile_url(platform, account)
-
             cmd = [
                 "gallery-dl",
                 "--dest",
@@ -100,16 +102,26 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
             ]
             if cookies_file and Path(cookies_file).exists():
                 cmd.extend(["--cookies", cookies_file])
+            tasks.append((platform, account, cmd, profile_url))
 
-            print(f"[crawl] {platform}/{account} -> {profile_url}")
-            try:
-                result = run_cmd(cmd, check=False, timeout=command_timeout_seconds)
-            except subprocess.TimeoutExpired:
-                print(f"[warn] 抓取超时({command_timeout_seconds}s): {platform}/{account}")
-                continue
-            if result.returncode != 0:
-                print(f"[warn] 抓取失败: {platform}/{account}")
-                print(result.stderr[-4000:])
+    print(f"[crawl] total_accounts={len(tasks)} max_workers={max_workers}")
+
+    def run_one(task: Tuple[str, str, List[str], str]) -> Tuple[str, str]:
+        platform, account, cmd, profile_url = task
+        header = f"[crawl] {platform}/{account} -> {profile_url}"
+        try:
+            result = run_cmd(cmd, check=False, timeout=command_timeout_seconds)
+        except subprocess.TimeoutExpired:
+            return ("warn", f"{header}\n[warn] 抓取超时({command_timeout_seconds}s): {platform}/{account}")
+        if result.returncode != 0:
+            return ("warn", f"{header}\n[warn] 抓取失败: {platform}/{account}\n{result.stderr[-2000:]}")
+        return ("ok", header)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+        futures = [executor.submit(run_one, task) for task in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            _, message = future.result()
+            print(message)
 
 
 def corner_edge_density(image: Image.Image) -> float:
