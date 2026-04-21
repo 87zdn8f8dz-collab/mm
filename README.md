@@ -6,6 +6,8 @@
 - 去重（近重复 + 中心内容一致但边缘水印差异）
 - 水印冗余素材过滤（优先保留清晰度更高、边角干扰更低版本）
 - 按类型归档到 `images/`、`videos/`、`captions/`
+- 自动发现 50 个垂类账号（X/IG）
+- 自动导出全网高热作品榜（视频/图文/文案）
 - GitHub Actions 定时后台挂机运行
 
 ## 1) 目录结构
@@ -56,6 +58,9 @@ python3 src/pipeline.py --config config/accounts.example.yaml --data-root data
 
 - `ACCOUNTS_YAML_B64`：账号配置文件 base64 后内容（可选）
 - `GALLERY_DL_COOKIES_B64`：cookies 文本（Netscape 格式）base64 后内容（可选但推荐）
+- `AUTO_DISCOVER`：是否开启自动发现账号（可选，默认 `1`）
+- `X_DISCOVERY_KEYWORDS`：X 关键词，`|` 分隔（可选）
+- `IG_DISCOVERY_TAGS`：IG 标签词，`|` 分隔（可选）
 
 ### Secret 生成示例
 
@@ -73,6 +78,10 @@ base64 -i cookies.txt | pbcopy
 - `data/archive/images/...`
 - `data/archive/videos/...`
 - `data/archive/captions/...`
+- `data/archive/hot_content/top_works.json`（高热榜）
+- `data/archive/hot_content/top_works.csv`
+- `data/archive/hot_content/top_works.md`
+- `data/archive/discovery/discovery_report.json`（自动发现报告）
 - `data/rejected/...`（被判定为重复或水印冗余）
 
 ## 6) 重要说明

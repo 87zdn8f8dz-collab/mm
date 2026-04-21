@@ -58,13 +58,51 @@ jobs:
             echo "cookies not provided"
           fi
 
+      - name: Auto discover 50 niche accounts (optional)
+        shell: bash
+        env:
+          AUTO_DISCOVER: ${{ secrets.AUTO_DISCOVER }}
+          X_DISCOVERY_KEYWORDS: ${{ secrets.X_DISCOVERY_KEYWORDS }}
+          IG_DISCOVERY_TAGS: ${{ secrets.IG_DISCOVERY_TAGS }}
+        run: |
+          AUTO_DISCOVER_VALUE="${AUTO_DISCOVER:-1}"
+          if [[ "${AUTO_DISCOVER_VALUE}" == "1" || "${AUTO_DISCOVER_VALUE}" == "true" || "${AUTO_DISCOVER_VALUE}" == "yes" ]]; then
+            cmd=(python src/discover_accounts.py
+              --output config/accounts.auto.yaml
+              --report data/archive/discovery/discovery_report.json
+              --target-total 50
+              --per-query-limit 35
+              --timeout-seconds 40
+              --max-items-per-account 20
+              --sleep-request-seconds 1.5
+            )
+            if [[ -f /tmp/gallery-dl-cookies.txt ]]; then
+              cmd+=(--cookies-file /tmp/gallery-dl-cookies.txt)
+            fi
+            if [[ -n "${X_DISCOVERY_KEYWORDS}" ]]; then
+              cmd+=(--x-keywords "${X_DISCOVERY_KEYWORDS}")
+            fi
+            if [[ -n "${IG_DISCOVERY_TAGS}" ]]; then
+              cmd+=(--ig-tags "${IG_DISCOVERY_TAGS}")
+            fi
+            "${cmd[@]}"
+          else
+            echo "AUTO_DISCOVER disabled"
+          fi
+
       - name: Run pipeline
         run: |
           CONFIG_PATH="config/accounts.example.yaml"
           if [[ -f "config/accounts.yaml" ]]; then
             CONFIG_PATH="config/accounts.yaml"
+          elif [[ -f "config/accounts.auto.yaml" ]]; then
+            CONFIG_PATH="config/accounts.auto.yaml"
           fi
           python src/pipeline.py --config "$CONFIG_PATH" --data-root data
+
+      - name: Export hot content ranking
+        run: |
+          python src/export_hot_content.py --raw-root data/raw --out-dir data/archive/hot_content --top-n 300
 
       - name: Upload archive artifact
         uses: actions/upload-artifact@v4
@@ -73,5 +111,6 @@ jobs:
           path: |
             data/archive
             data/rejected
+            config/accounts.auto.yaml
           if-no-files-found: warn
           retention-days: 30
