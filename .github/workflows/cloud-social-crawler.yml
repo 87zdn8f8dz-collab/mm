@@ -66,11 +66,21 @@ jobs:
               --report data/archive/discovery/discovery_report.json
               --target-total 50
               --per-query-limit 20
-              --timeout-seconds 40
+              --timeout-seconds 30
               --max-items-per-account 8
-              --command-timeout-seconds 60
+              --command-timeout-seconds 90
               --max-workers 6
               --sleep-request-seconds 1.5
+              --instagram-max-items-per-account 6
+              --instagram-sleep-request-seconds 2.2
+              --instagram-command-timeout-seconds 180
+              --instagram-max-workers 2
+              --retries 1
+              --retry-backoff-seconds 4
+              --ig-probe-timeout-seconds 18
+              --ig-probe-max-workers 8
+              --ig-probe-limit 1
+              --ig-probe-max-candidates 80
             )
             if [[ -f /tmp/gallery-dl-cookies.txt ]]; then
               cmd+=(--cookies-file /tmp/gallery-dl-cookies.txt)

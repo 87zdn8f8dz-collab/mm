@@ -7,6 +7,8 @@
 - 水印冗余素材过滤（优先保留清晰度更高、边角干扰更低版本）
 - 按平台归档到 `twitter素材/`、`ig素材/`，并输出 `纯文案文本/`
 - 保存原始 `title` / `description` / `content`（含源 metadata 备份）
+- IG 账号自动预探测（优先选择可抓取账号）
+- IG 专属抓取参数（更长超时、更低并发、失败重试）
 - 自动发现 50 个垂类账号（X/IG）
 - 自动导出全网高热作品榜（视频/图文/文案）
 - GitHub Actions 定时后台挂机运行
@@ -41,6 +43,12 @@ crawl:
   sleep_request_seconds: 1.2
   command_timeout_seconds: 180
   max_workers: 4
+  instagram_max_items_per_account: 6
+  instagram_sleep_request_seconds: 2.2
+  instagram_command_timeout_seconds: 180
+  instagram_max_workers: 2
+  retries: 1
+  retry_backoff_seconds: 4
 ```
 
 ## 3) 本地快速验证（可选）

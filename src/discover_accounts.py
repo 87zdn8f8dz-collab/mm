@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import re
 import subprocess
@@ -141,6 +142,64 @@ def run_dump_json(
         return json.loads(payload), None
     except Exception as error:
         return None, f"JSON parse failed: {error}"
+
+
+def build_profile_url(platform: str, account: str) -> str:
+    if platform == "twitter":
+        return f"https://x.com/{account}"
+    if platform == "instagram":
+        return f"https://www.instagram.com/{account}/"
+    raise ValueError(f"Unsupported platform: {platform}")
+
+
+def is_probe_success(data: Optional[List], error: Optional[str]) -> bool:
+    if error:
+        return False
+    if data is None:
+        return False
+    return len(data) > 0
+
+
+def probe_accounts(
+    platform: str,
+    accounts: List[str],
+    cookies_file: Optional[Path],
+    timeout_seconds: int,
+    max_workers: int,
+    per_account_limit: int,
+) -> Tuple[List[str], Dict[str, str]]:
+    candidates = list(dict.fromkeys([account.strip() for account in accounts if account.strip()]))
+    errors: Dict[str, str] = {}
+    success: List[str] = []
+
+    if not candidates:
+        return success, errors
+
+    def run_one(account: str) -> Tuple[str, bool, str]:
+        url = build_profile_url(platform, account)
+        data, error = run_dump_json(
+            url=url,
+            cookies_file=cookies_file,
+            limit=per_account_limit,
+            timeout_seconds=timeout_seconds,
+        )
+        if is_probe_success(data, error):
+            return account, True, ""
+        message = (error or "empty result").strip()
+        return account, False, message[:500]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+        futures = [executor.submit(run_one, account) for account in candidates]
+        for future in concurrent.futures.as_completed(futures):
+            account, ok, message = future.result()
+            if ok:
+                success.append(account)
+            else:
+                errors[account] = message
+
+    success_set = set(success)
+    ordered_success = [account for account in candidates if account in success_set]
+    return ordered_success, errors
 
 
 def discover_x_accounts(
@@ -292,6 +351,43 @@ def choose_accounts(x_counter: Counter, ig_counter: Counter, target_total: int) 
     return x_selected, ig_selected
 
 
+def choose_from_validated_candidates(
+    preferred: List[str],
+    validated: List[str],
+    target_count: int,
+) -> List[str]:
+    if target_count <= 0:
+        return []
+    validated_set = set(validated)
+    selected: List[str] = []
+    seen: set[str] = set()
+
+    for account in preferred:
+        if account in validated_set and account not in seen:
+            selected.append(account)
+            seen.add(account)
+            if len(selected) >= target_count:
+                return selected
+
+    for account in validated:
+        if account in seen:
+            continue
+        selected.append(account)
+        seen.add(account)
+        if len(selected) >= target_count:
+            return selected
+
+    for account in preferred:
+        if account in seen:
+            continue
+        selected.append(account)
+        seen.add(account)
+        if len(selected) >= target_count:
+            return selected
+
+    return selected[:target_count]
+
+
 def write_accounts_yaml(
     output_path: Path,
     x_accounts: List[str],
@@ -300,6 +396,12 @@ def write_accounts_yaml(
     sleep_request_seconds: float,
     command_timeout_seconds: int,
     max_workers: int,
+    instagram_max_items_per_account: int,
+    instagram_sleep_request_seconds: float,
+    instagram_command_timeout_seconds: int,
+    instagram_max_workers: int,
+    retries: int,
+    retry_backoff_seconds: float,
 ) -> None:
     payload = {
         "twitter": x_accounts,
@@ -309,6 +411,12 @@ def write_accounts_yaml(
             "sleep_request_seconds": sleep_request_seconds,
             "command_timeout_seconds": command_timeout_seconds,
             "max_workers": max_workers,
+            "instagram_max_items_per_account": instagram_max_items_per_account,
+            "instagram_sleep_request_seconds": instagram_sleep_request_seconds,
+            "instagram_command_timeout_seconds": instagram_command_timeout_seconds,
+            "instagram_max_workers": instagram_max_workers,
+            "retries": retries,
+            "retry_backoff_seconds": retry_backoff_seconds,
         },
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,6 +431,8 @@ def write_discovery_report(
     ig_accounts: List[str],
     x_keywords: List[str],
     ig_tags: List[str],
+    ig_probe_success: List[str],
+    ig_probe_errors: Dict[str, str],
 ) -> None:
     report = {
         "x_keywords": x_keywords,
@@ -333,6 +443,10 @@ def write_discovery_report(
         "ig_selected": ig_accounts,
         "x_score": dict(x_counter),
         "ig_score": dict(ig_counter),
+        "ig_probe_success_count": len(ig_probe_success),
+        "ig_probe_success_accounts": ig_probe_success,
+        "ig_probe_error_count": len(ig_probe_errors),
+        "ig_probe_errors": ig_probe_errors,
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -349,6 +463,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep-request-seconds", type=float, default=1.5)
     parser.add_argument("--command-timeout-seconds", type=int, default=180)
     parser.add_argument("--max-workers", type=int, default=4)
+    parser.add_argument("--instagram-max-items-per-account", type=int, default=6)
+    parser.add_argument("--instagram-sleep-request-seconds", type=float, default=2.2)
+    parser.add_argument("--instagram-command-timeout-seconds", type=int, default=180)
+    parser.add_argument("--instagram-max-workers", type=int, default=2)
+    parser.add_argument("--retries", type=int, default=1)
+    parser.add_argument("--retry-backoff-seconds", type=float, default=4.0)
+    parser.add_argument("--ig-probe-timeout-seconds", type=int, default=20)
+    parser.add_argument("--ig-probe-max-workers", type=int, default=8)
+    parser.add_argument("--ig-probe-limit", type=int, default=1)
+    parser.add_argument("--ig-probe-max-candidates", type=int, default=80)
     parser.add_argument("--cookies-file", type=Path, default=None)
     parser.add_argument("--x-keywords", type=str, default="|".join(DEFAULT_X_KEYWORDS))
     parser.add_argument("--ig-tags", type=str, default="|".join(DEFAULT_IG_TAGS))
@@ -374,6 +498,25 @@ def main() -> None:
     )
     x_accounts, ig_accounts = choose_accounts(x_counter, ig_counter, args.target_total)
 
+    ig_candidate_ranked = [handle for handle, _ in ig_counter.most_common(300)]
+    ig_probe_candidates = list(
+        dict.fromkeys((ig_candidate_ranked + ig_accounts + FALLBACK_IG_ACCOUNTS)[: args.ig_probe_max_candidates])
+    )
+    ig_probe_success, ig_probe_errors = probe_accounts(
+        platform="instagram",
+        accounts=ig_probe_candidates,
+        cookies_file=args.cookies_file,
+        timeout_seconds=args.ig_probe_timeout_seconds,
+        max_workers=args.ig_probe_max_workers,
+        per_account_limit=args.ig_probe_limit,
+    )
+    ig_target = args.target_total - (args.target_total // 2)
+    ig_accounts = choose_from_validated_candidates(
+        preferred=ig_accounts + ig_probe_candidates,
+        validated=ig_probe_success,
+        target_count=ig_target,
+    )
+
     write_accounts_yaml(
         output_path=args.output,
         x_accounts=x_accounts,
@@ -382,6 +525,12 @@ def main() -> None:
         sleep_request_seconds=args.sleep_request_seconds,
         command_timeout_seconds=args.command_timeout_seconds,
         max_workers=args.max_workers,
+        instagram_max_items_per_account=args.instagram_max_items_per_account,
+        instagram_sleep_request_seconds=args.instagram_sleep_request_seconds,
+        instagram_command_timeout_seconds=args.instagram_command_timeout_seconds,
+        instagram_max_workers=args.instagram_max_workers,
+        retries=args.retries,
+        retry_backoff_seconds=args.retry_backoff_seconds,
     )
     write_discovery_report(
         report_path=args.report,
@@ -391,9 +540,15 @@ def main() -> None:
         ig_accounts=ig_accounts,
         x_keywords=x_keywords,
         ig_tags=ig_tags,
+        ig_probe_success=ig_probe_success,
+        ig_probe_errors=ig_probe_errors,
     )
 
     print(f"[discover] x_unique={len(x_counter)} ig_unique={len(ig_counter)}")
+    print(
+        f"[discover] ig_probe_success={len(ig_probe_success)} "
+        f"ig_probe_errors={len(ig_probe_errors)} checked={len(ig_probe_candidates)}"
+    )
     print(f"[discover] selected x={len(x_accounts)} ig={len(ig_accounts)} total={len(x_accounts)+len(ig_accounts)}")
     print(f"[discover] output={args.output}")
     print(f"[discover] report={args.report}")

@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -75,58 +76,156 @@ def build_profile_url(platform: str, account: str) -> str:
     raise ValueError(f"Unsupported platform: {platform}")
 
 
-def crawl_accounts(raw_root: Path, config: Dict) -> None:
-    account_map = normalize_accounts(config)
-    crawl_config = config.get("crawl", {}) or {}
+def platform_crawl_settings(crawl_config: Dict, platform: str) -> Dict[str, float]:
     max_items = int(crawl_config.get("max_items_per_account", 40))
     sleep_request_seconds = float(crawl_config.get("sleep_request_seconds", 1.2))
     command_timeout_seconds = int(crawl_config.get("command_timeout_seconds", 180))
     max_workers = int(crawl_config.get("max_workers", 4))
+    retries = int(crawl_config.get("retries", 1))
+    retry_backoff_seconds = float(crawl_config.get("retry_backoff_seconds", 4.0))
+
+    if platform == "instagram":
+        max_items = int(crawl_config.get("instagram_max_items_per_account", max_items))
+        sleep_request_seconds = float(crawl_config.get("instagram_sleep_request_seconds", max(sleep_request_seconds, 2.0)))
+        command_timeout_seconds = int(
+            crawl_config.get("instagram_command_timeout_seconds", max(command_timeout_seconds, 180))
+        )
+        max_workers = int(crawl_config.get("instagram_max_workers", max(1, min(2, max_workers))))
+    elif platform == "twitter":
+        max_items = int(crawl_config.get("twitter_max_items_per_account", max_items))
+        sleep_request_seconds = float(crawl_config.get("twitter_sleep_request_seconds", sleep_request_seconds))
+        command_timeout_seconds = int(crawl_config.get("twitter_command_timeout_seconds", command_timeout_seconds))
+        max_workers = int(crawl_config.get("twitter_max_workers", max_workers))
+
+    return {
+        "max_items": max_items,
+        "sleep_request_seconds": sleep_request_seconds,
+        "command_timeout_seconds": command_timeout_seconds,
+        "max_workers": max_workers,
+        "retries": retries,
+        "retry_backoff_seconds": retry_backoff_seconds,
+    }
+
+
+def build_gallery_dl_command(
+    output_dir: Path,
+    profile_url: str,
+    max_items: int,
+    sleep_request_seconds: float,
+    cookies_file: Optional[str],
+) -> List[str]:
+    cmd = [
+        "gallery-dl",
+        "--dest",
+        str(output_dir),
+        "--write-metadata",
+        "--write-info-json",
+        "--range",
+        f"1-{max_items}",
+        "--sleep-request",
+        str(sleep_request_seconds),
+        profile_url,
+    ]
+    if cookies_file and Path(cookies_file).exists():
+        cmd.extend(["--cookies", cookies_file])
+    return cmd
+
+
+def is_non_retryable_error(stderr: str) -> bool:
+    error_text = (stderr or "").lower()
+    markers = [
+        "unauthorized",
+        "login required",
+        "private profile",
+        "checkpoint required",
+        "404 not found",
+    ]
+    return any(marker in error_text for marker in markers)
+
+
+def crawl_accounts(raw_root: Path, config: Dict) -> None:
+    account_map = normalize_accounts(config)
+    crawl_config = config.get("crawl", {}) or {}
     cookies_file = os.environ.get("GALLERY_DL_COOKIES_FILE")
 
     if shutil.which("gallery-dl") is None:
         raise RuntimeError("gallery-dl 未安装，请先执行: pip install -r requirements.txt")
 
-    tasks: List[Tuple[str, str, List[str], str]] = []
+    tasks_by_platform: Dict[str, List[Tuple[str, str, List[str], str, int, int, float]]] = {
+        "twitter": [],
+        "instagram": [],
+    }
     for platform, accounts in account_map.items():
+        settings = platform_crawl_settings(crawl_config, platform)
         for account in accounts:
             output_dir = raw_root / platform / account
             output_dir.mkdir(parents=True, exist_ok=True)
             profile_url = build_profile_url(platform, account)
-            cmd = [
-                "gallery-dl",
-                "--dest",
-                str(output_dir),
-                "--write-metadata",
-                "--write-info-json",
-                "--range",
-                f"1-{max_items}",
-                "--sleep-request",
-                str(sleep_request_seconds),
-                profile_url,
-            ]
-            if cookies_file and Path(cookies_file).exists():
-                cmd.extend(["--cookies", cookies_file])
-            tasks.append((platform, account, cmd, profile_url))
+            cmd = build_gallery_dl_command(
+                output_dir=output_dir,
+                profile_url=profile_url,
+                max_items=int(settings["max_items"]),
+                sleep_request_seconds=float(settings["sleep_request_seconds"]),
+                cookies_file=cookies_file,
+            )
+            tasks_by_platform.setdefault(platform, []).append(
+                (
+                    platform,
+                    account,
+                    cmd,
+                    profile_url,
+                    int(settings["command_timeout_seconds"]),
+                    int(settings["retries"]),
+                    float(settings["retry_backoff_seconds"]),
+                )
+            )
 
-    print(f"[crawl] total_accounts={len(tasks)} max_workers={max_workers}")
+    total_accounts = sum(len(items) for items in tasks_by_platform.values())
+    print(f"[crawl] total_accounts={total_accounts}")
 
-    def run_one(task: Tuple[str, str, List[str], str]) -> Tuple[str, str]:
-        platform, account, cmd, profile_url = task
+    def run_one(task: Tuple[str, str, List[str], str, int, int, float]) -> Tuple[str, str]:
+        platform, account, cmd, profile_url, command_timeout_seconds, retries, retry_backoff_seconds = task
         header = f"[crawl] {platform}/{account} -> {profile_url}"
-        try:
-            result = run_cmd(cmd, check=False, timeout=command_timeout_seconds)
-        except subprocess.TimeoutExpired:
-            return ("warn", f"{header}\n[warn] 抓取超时({command_timeout_seconds}s): {platform}/{account}")
-        if result.returncode != 0:
-            return ("warn", f"{header}\n[warn] 抓取失败: {platform}/{account}\n{result.stderr[-2000:]}")
-        return ("ok", header)
+        last_error = ""
+        attempts = max(1, retries + 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                result = run_cmd(cmd, check=False, timeout=command_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                last_error = f"[warn] 抓取超时({command_timeout_seconds}s): {platform}/{account} (attempt {attempt}/{attempts})"
+                if attempt < attempts:
+                    time.sleep(retry_backoff_seconds * attempt)
+                    continue
+                return ("warn", f"{header}\n{last_error}")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-        futures = [executor.submit(run_one, task) for task in tasks]
-        for future in concurrent.futures.as_completed(futures):
-            _, message = future.result()
-            print(message)
+            if result.returncode == 0:
+                if attempt == 1:
+                    return ("ok", header)
+                return ("ok", f"{header}\n[info] 重试成功: {platform}/{account} (attempt {attempt}/{attempts})")
+
+            error_tail = (result.stderr or "").strip()[-2000:]
+            last_error = (
+                f"[warn] 抓取失败: {platform}/{account} (attempt {attempt}/{attempts})\n"
+                f"{error_tail}"
+            )
+            if attempt < attempts and not is_non_retryable_error(error_tail):
+                time.sleep(retry_backoff_seconds * attempt)
+                continue
+            return ("warn", f"{header}\n{last_error}")
+        return ("warn", f"{header}\n{last_error}")
+
+    platform_order = ["twitter", "instagram"]
+    for platform in platform_order:
+        tasks = tasks_by_platform.get(platform, [])
+        if not tasks:
+            continue
+        workers = int(platform_crawl_settings(crawl_config, platform)["max_workers"])
+        print(f"[crawl] platform={platform} accounts={len(tasks)} max_workers={workers}")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+            futures = [executor.submit(run_one, task) for task in tasks]
+            for future in concurrent.futures.as_completed(futures):
+                _, message = future.result()
+                print(message)
 
 
 def corner_edge_density(image: Image.Image) -> float:
