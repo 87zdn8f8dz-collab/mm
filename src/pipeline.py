@@ -399,12 +399,23 @@ def build_text_record(payload: Dict[str, str], asset: Asset) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def ensure_placeholder(directory: Path) -> None:
+    placeholder = directory / ".keep"
+    if not placeholder.exists():
+        placeholder.write_text("placeholder\n", encoding="utf-8")
+
+
 def organize_assets(kept_assets: List[Asset], archive_root: Path) -> None:
     text_root = archive_root / TEXT_ARCHIVE_DIR
     text_root.mkdir(parents=True, exist_ok=True)
+    ensure_placeholder(text_root)
     for platform_dir_name in PLATFORM_ARCHIVE_MAP.values():
-        (archive_root / platform_dir_name).mkdir(parents=True, exist_ok=True)
-        (text_root / platform_dir_name).mkdir(parents=True, exist_ok=True)
+        media_platform_dir = archive_root / platform_dir_name
+        text_platform_dir = text_root / platform_dir_name
+        media_platform_dir.mkdir(parents=True, exist_ok=True)
+        text_platform_dir.mkdir(parents=True, exist_ok=True)
+        ensure_placeholder(media_platform_dir)
+        ensure_placeholder(text_platform_dir)
 
     caption_hashes: set[str] = set()
 
