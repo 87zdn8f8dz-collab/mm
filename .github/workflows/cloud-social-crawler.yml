@@ -91,13 +91,17 @@ jobs:
           fi
 
       - name: Run pipeline
+        env:
+          AUTO_DISCOVER: ${{ secrets.AUTO_DISCOVER }}
         run: |
+          AUTO_DISCOVER_VALUE="${AUTO_DISCOVER:-1}"
           CONFIG_PATH="config/accounts.example.yaml"
-          if [[ -f "config/accounts.yaml" ]]; then
-            CONFIG_PATH="config/accounts.yaml"
-          elif [[ -f "config/accounts.auto.yaml" ]]; then
+          if [[ ("${AUTO_DISCOVER_VALUE}" == "1" || "${AUTO_DISCOVER_VALUE}" == "true" || "${AUTO_DISCOVER_VALUE}" == "yes") && -f "config/accounts.auto.yaml" ]]; then
             CONFIG_PATH="config/accounts.auto.yaml"
+          elif [[ -f "config/accounts.yaml" ]]; then
+            CONFIG_PATH="config/accounts.yaml"
           fi
+          echo "CONFIG_PATH=${CONFIG_PATH}"
           python src/pipeline.py --config "$CONFIG_PATH" --data-root data
 
       - name: Export hot content ranking

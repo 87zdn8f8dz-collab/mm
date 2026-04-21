@@ -62,6 +62,9 @@ python3 src/pipeline.py --config config/accounts.example.yaml --data-root data
 - `X_DISCOVERY_KEYWORDS`：X 关键词，`|` 分隔（可选）
 - `IG_DISCOVERY_TAGS`：IG 标签词，`|` 分隔（可选）
 
+当 `AUTO_DISCOVER=1` 且发现脚本生成了 `config/accounts.auto.yaml` 时，
+工作流优先使用自动发现账号；否则回退到 `config/accounts.yaml`（若存在）。
+
 ### Secret 生成示例
 
 ```bash

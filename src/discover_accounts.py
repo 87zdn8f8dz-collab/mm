@@ -209,37 +209,79 @@ def choose_accounts(x_counter: Counter, ig_counter: Counter, target_total: int) 
     x_selected = x_ranked[:x_target]
     ig_selected = ig_ranked[:ig_target]
 
+    x_index = len(x_selected)
+    ig_index = len(ig_selected)
     while len(x_selected) + len(ig_selected) < target_total:
-        x_candidate = x_ranked[len(x_selected)] if len(x_selected) < len(x_ranked) else None
-        ig_candidate = ig_ranked[len(ig_selected)] if len(ig_selected) < len(ig_ranked) else None
-        if x_candidate:
-            x_selected.append(x_candidate)
-        if len(x_selected) + len(ig_selected) >= target_total:
-            break
-        if ig_candidate:
-            ig_selected.append(ig_candidate)
-        if not x_candidate and not ig_candidate:
+        progressed = False
+        if len(x_selected) <= len(ig_selected):
+            if x_index < len(x_ranked):
+                x_selected.append(x_ranked[x_index])
+                x_index += 1
+                progressed = True
+            elif ig_index < len(ig_ranked):
+                ig_selected.append(ig_ranked[ig_index])
+                ig_index += 1
+                progressed = True
+        else:
+            if ig_index < len(ig_ranked):
+                ig_selected.append(ig_ranked[ig_index])
+                ig_index += 1
+                progressed = True
+            elif x_index < len(x_ranked):
+                x_selected.append(x_ranked[x_index])
+                x_index += 1
+                progressed = True
+        if not progressed:
             break
 
-    if len(x_selected) < x_target:
-        existing = set(x_selected)
-        for account in FALLBACK_X_ACCOUNTS:
-            if account in existing:
-                continue
-            x_selected.append(account)
-            existing.add(account)
-            if len(x_selected) >= x_target:
+    x_existing = set(x_selected)
+    ig_existing = set(ig_selected)
+    fallback_x_index = 0
+    fallback_ig_index = 0
+    while len(x_selected) + len(ig_selected) < target_total:
+        progressed = False
+        if len(x_selected) <= len(ig_selected):
+            while fallback_x_index < len(FALLBACK_X_ACCOUNTS):
+                account = FALLBACK_X_ACCOUNTS[fallback_x_index]
+                fallback_x_index += 1
+                if account in x_existing:
+                    continue
+                x_selected.append(account)
+                x_existing.add(account)
+                progressed = True
                 break
-
-    if len(ig_selected) < ig_target:
-        existing = set(ig_selected)
-        for account in FALLBACK_IG_ACCOUNTS:
-            if account in existing:
-                continue
-            ig_selected.append(account)
-            existing.add(account)
-            if len(ig_selected) >= ig_target:
+            if not progressed:
+                while fallback_ig_index < len(FALLBACK_IG_ACCOUNTS):
+                    account = FALLBACK_IG_ACCOUNTS[fallback_ig_index]
+                    fallback_ig_index += 1
+                    if account in ig_existing:
+                        continue
+                    ig_selected.append(account)
+                    ig_existing.add(account)
+                    progressed = True
+                    break
+        else:
+            while fallback_ig_index < len(FALLBACK_IG_ACCOUNTS):
+                account = FALLBACK_IG_ACCOUNTS[fallback_ig_index]
+                fallback_ig_index += 1
+                if account in ig_existing:
+                    continue
+                ig_selected.append(account)
+                ig_existing.add(account)
+                progressed = True
                 break
+            if not progressed:
+                while fallback_x_index < len(FALLBACK_X_ACCOUNTS):
+                    account = FALLBACK_X_ACCOUNTS[fallback_x_index]
+                    fallback_x_index += 1
+                    if account in x_existing:
+                        continue
+                    x_selected.append(account)
+                    x_existing.add(account)
+                    progressed = True
+                    break
+        if not progressed:
+            break
 
     return x_selected, ig_selected
 
