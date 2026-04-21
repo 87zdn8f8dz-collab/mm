@@ -38,6 +38,7 @@ instagram:
 crawl:
   max_items_per_account: 40
   sleep_request_seconds: 1.2
+  command_timeout_seconds: 180
 ```
 
 ## 3) 本地快速验证（可选）

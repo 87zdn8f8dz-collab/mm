@@ -43,8 +43,8 @@ class Asset:
         return (self.resolution, self.file_size, -self.corner_edge_density)
 
 
-def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, text=True, capture_output=True, check=check)
+def run_cmd(cmd: List[str], check: bool = True, timeout: Optional[int] = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, text=True, capture_output=True, check=check, timeout=timeout)
 
 
 def load_config(config_path: Path) -> Dict:
@@ -74,6 +74,7 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
     crawl_config = config.get("crawl", {}) or {}
     max_items = int(crawl_config.get("max_items_per_account", 40))
     sleep_request_seconds = float(crawl_config.get("sleep_request_seconds", 1.2))
+    command_timeout_seconds = int(crawl_config.get("command_timeout_seconds", 180))
     cookies_file = os.environ.get("GALLERY_DL_COOKIES_FILE")
 
     if shutil.which("gallery-dl") is None:
@@ -101,7 +102,11 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
                 cmd.extend(["--cookies", cookies_file])
 
             print(f"[crawl] {platform}/{account} -> {profile_url}")
-            result = run_cmd(cmd, check=False)
+            try:
+                result = run_cmd(cmd, check=False, timeout=command_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                print(f"[warn] 抓取超时({command_timeout_seconds}s): {platform}/{account}")
+                continue
             if result.returncode != 0:
                 print(f"[warn] 抓取失败: {platform}/{account}")
                 print(result.stderr[-4000:])

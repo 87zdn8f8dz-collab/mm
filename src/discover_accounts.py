@@ -292,6 +292,7 @@ def write_accounts_yaml(
     ig_accounts: List[str],
     max_items_per_account: int,
     sleep_request_seconds: float,
+    command_timeout_seconds: int,
 ) -> None:
     payload = {
         "twitter": x_accounts,
@@ -299,6 +300,7 @@ def write_accounts_yaml(
         "crawl": {
             "max_items_per_account": max_items_per_account,
             "sleep_request_seconds": sleep_request_seconds,
+            "command_timeout_seconds": command_timeout_seconds,
         },
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -337,6 +339,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=int, default=45)
     parser.add_argument("--max-items-per-account", type=int, default=20)
     parser.add_argument("--sleep-request-seconds", type=float, default=1.5)
+    parser.add_argument("--command-timeout-seconds", type=int, default=180)
     parser.add_argument("--cookies-file", type=Path, default=None)
     parser.add_argument("--x-keywords", type=str, default="|".join(DEFAULT_X_KEYWORDS))
     parser.add_argument("--ig-tags", type=str, default="|".join(DEFAULT_IG_TAGS))
@@ -368,6 +371,7 @@ def main() -> None:
         ig_accounts=ig_accounts,
         max_items_per_account=args.max_items_per_account,
         sleep_request_seconds=args.sleep_request_seconds,
+        command_timeout_seconds=args.command_timeout_seconds,
     )
     write_discovery_report(
         report_path=args.report,
