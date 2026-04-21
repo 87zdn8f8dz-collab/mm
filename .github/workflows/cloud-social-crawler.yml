@@ -71,9 +71,10 @@ jobs:
               --output config/accounts.auto.yaml
               --report data/archive/discovery/discovery_report.json
               --target-total 50
-              --per-query-limit 35
+              --per-query-limit 20
               --timeout-seconds 40
-              --max-items-per-account 20
+              --max-items-per-account 10
+              --command-timeout-seconds 90
               --sleep-request-seconds 1.5
             )
             if [[ -f /tmp/gallery-dl-cookies.txt ]]; then
