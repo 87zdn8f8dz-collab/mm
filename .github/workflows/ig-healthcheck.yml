@@ -1,0 +1,81 @@
+name: ig-healthcheck
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "45 */3 * * *"
+
+concurrency:
+  group: ig-healthcheck
+  cancel-in-progress: true
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bootstrap Linux environment
+        run: |
+          bash scripts/bootstrap_linux.sh
+
+      - name: Write accounts config from secret (optional)
+        shell: bash
+        env:
+          ACCOUNTS_YAML_B64: ${{ secrets.ACCOUNTS_YAML_B64 }}
+        run: |
+          if [[ -n "${ACCOUNTS_YAML_B64}" ]]; then
+            echo "$ACCOUNTS_YAML_B64" | base64 --decode > config/accounts.yaml
+            echo "Use config/accounts.yaml from secret"
+          else
+            echo "Use config/accounts.example.yaml"
+          fi
+
+      - name: Write cookies from secret (optional)
+        shell: bash
+        env:
+          GALLERY_DL_COOKIES_B64: ${{ secrets.GALLERY_DL_COOKIES_B64 }}
+        run: |
+          if [[ -n "${GALLERY_DL_COOKIES_B64}" ]]; then
+            echo "$GALLERY_DL_COOKIES_B64" | base64 --decode > /tmp/gallery-dl-cookies.txt
+            echo "GALLERY_DL_COOKIES_FILE=/tmp/gallery-dl-cookies.txt" >> "$GITHUB_ENV"
+            echo "cookies enabled"
+          else
+            echo "cookies not provided"
+          fi
+
+      - name: Run IG healthcheck
+        id: ig_health
+        shell: bash
+        run: |
+          CONFIG_PATH="config/accounts.example.yaml"
+          if [[ -f "config/accounts.yaml" ]]; then
+            CONFIG_PATH="config/accounts.yaml"
+          fi
+          echo "CONFIG_PATH=${CONFIG_PATH}"
+          python src/check_ig_health.py \
+            --config "${CONFIG_PATH}" \
+            --report data/archive/ig_health/ig_health_report.json \
+            --target-count 25 \
+            --timeout-seconds 20 \
+            --max-workers 6 \
+            --probe-limit 1 \
+            --require-success-min 1
+
+      - name: Upload IG health artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ig-health-${{ github.run_id }}
+          path: |
+            data/archive/ig_health
+          if-no-files-found: warn
+          retention-days: 30

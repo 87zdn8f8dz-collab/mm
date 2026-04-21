@@ -105,3 +105,20 @@ base64 -i cookies.txt | pbcopy
 - 若平台风控增强，建议提供有效 cookies 并降低频率。
 - 该方案是“工程可运行版”，不是平台官方 API 替代品。
 - 默认 `FAIL_ON_EMPTY=1`，当抓取结果为空会让任务失败，避免“表面成功、实际无数据”。
+
+## 7) IG 登录态健康检查（新增）
+
+新增工作流：`.github/workflows/ig-healthcheck.yml`，支持：
+
+- 手动触发：`workflow_dispatch`
+- 定时触发：每 3 小时
+
+用途：
+
+- 快速检测当前 IG cookies 是否可用
+- 生成健康报告：`data/archive/ig_health/ig_health_report.json`
+- 当可用账号数 `< require_success_min` 时，任务标记失败（默认至少 1 个）
+
+说明：
+
+- 主抓取流程已经接入 IG 预探测；当 IG 不健康时会自动降级为 X-only，保障批量任务稳定产出。
