@@ -20,6 +20,11 @@ from PIL import Image, ImageFilter
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+PLATFORM_ARCHIVE_MAP = {
+    "twitter": "twitter素材",
+    "instagram": "ig素材",
+}
+TEXT_ARCHIVE_DIR = "纯文案文本"
 
 
 @dataclass
@@ -327,21 +332,15 @@ def metadata_candidates(asset_path: Path) -> List[Path]:
     ]
 
 
-def extract_caption_from_metadata(meta_path: Path) -> str:
+def load_metadata(meta_path: Path) -> Dict:
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:
-        return ""
+        return {}
+    return data if isinstance(data, dict) else {}
 
-    keys = [
-        "content",
-        "description",
-        "caption",
-        "text",
-        "title",
-        "tweet_content",
-        "tweet_text",
-    ]
+
+def first_non_empty(data: Dict, keys: List[str]) -> str:
     for key in keys:
         value = data.get(key)
         if isinstance(value, str) and value.strip():
@@ -353,37 +352,96 @@ def sha1_text(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
+def normalize_platform_dir(platform: str) -> str:
+    if platform in PLATFORM_ARCHIVE_MAP:
+        return PLATFORM_ARCHIVE_MAP[platform]
+    if platform and platform != "unknown":
+        return f"{platform}素材"
+    return "unknown素材"
+
+
+def extract_text_payload(meta: Dict) -> Dict[str, str]:
+    title = first_non_empty(meta, ["title", "full_title", "name", "tweet_title"])
+    description = first_non_empty(meta, ["description", "summary", "subtitle"])
+    content = first_non_empty(meta, ["content", "caption", "text", "tweet_content", "tweet_text"])
+    post_url = first_non_empty(meta, ["post_url", "tweet_url", "shortcode_url", "url", "webpage_url"])
+    post_id = first_non_empty(meta, ["post_id", "tweet_id", "media_id", "id"])
+    return {
+        "title": title,
+        "description": description,
+        "content": content,
+        "post_url": post_url,
+        "post_id": post_id,
+    }
+
+
+def read_metadata_for_asset(asset_path: Path) -> Tuple[Dict, Optional[Path]]:
+    for meta_path in metadata_candidates(asset_path):
+        if not meta_path.exists():
+            continue
+        metadata = load_metadata(meta_path)
+        if metadata:
+            return metadata, meta_path
+    return {}, None
+
+
+def build_text_record(payload: Dict[str, str], asset: Asset) -> str:
+    lines = [
+        f"平台: {asset.platform}",
+        f"账号: {asset.account}",
+        f"来源文件: {asset.path.name}",
+        f"标题: {payload.get('title') or ''}",
+        f"描述: {payload.get('description') or ''}",
+        f"正文: {payload.get('content') or ''}",
+        f"链接: {payload.get('post_url') or ''}",
+        f"作品ID: {payload.get('post_id') or ''}",
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+
 def organize_assets(kept_assets: List[Asset], archive_root: Path) -> None:
-    image_root = archive_root / "images"
-    video_root = archive_root / "videos"
-    text_root = archive_root / "captions"
+    text_root = archive_root / TEXT_ARCHIVE_DIR
 
     caption_hashes: set[str] = set()
 
     for asset in kept_assets:
-        destination_base = image_root if asset.kind == "image" else video_root
-        destination_dir = destination_base / asset.platform / asset.account
+        platform_dir_name = normalize_platform_dir(asset.platform)
+        media_type_dir = "images" if asset.kind == "image" else "videos"
+        destination_dir = archive_root / platform_dir_name / asset.account / media_type_dir
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination_path = destination_dir / asset.path.name
         shutil.copy2(asset.path, destination_path)
 
-        caption = ""
-        for meta_path in metadata_candidates(asset.path):
-            if meta_path.exists():
-                caption = extract_caption_from_metadata(meta_path)
-                if caption:
-                    break
+        metadata, metadata_path = read_metadata_for_asset(asset.path)
+        if not metadata:
+            continue
 
-        if caption:
-            signature = sha1_text(caption)
-            if signature in caption_hashes:
-                continue
-            caption_hashes.add(signature)
+        text_payload = extract_text_payload(metadata)
+        signature_raw = "\n".join(
+            [
+                text_payload.get("title", ""),
+                text_payload.get("description", ""),
+                text_payload.get("content", ""),
+                text_payload.get("post_url", ""),
+                text_payload.get("post_id", ""),
+            ]
+        ).strip()
+        if not signature_raw:
+            continue
 
-            caption_dir = text_root / asset.platform / asset.account
-            caption_dir.mkdir(parents=True, exist_ok=True)
-            caption_file = caption_dir / f"{asset.path.stem}.txt"
-            caption_file.write_text(caption + "\n", encoding="utf-8")
+        signature = sha1_text(signature_raw)
+        if signature in caption_hashes:
+            continue
+        caption_hashes.add(signature)
+
+        caption_dir = text_root / platform_dir_name / asset.account
+        caption_dir.mkdir(parents=True, exist_ok=True)
+        caption_file = caption_dir / f"{asset.path.stem}.txt"
+        caption_file.write_text(build_text_record(text_payload, asset), encoding="utf-8")
+
+        if metadata_path:
+            metadata_backup = caption_dir / f"{asset.path.stem}.source.json"
+            shutil.copy2(metadata_path, metadata_backup)
 
 
 def run_pipeline(config_path: Path, data_root: Path) -> None:

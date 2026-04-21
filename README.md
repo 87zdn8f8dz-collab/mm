@@ -5,7 +5,8 @@
 - 图片、视频、文案抓取
 - 去重（近重复 + 中心内容一致但边缘水印差异）
 - 水印冗余素材过滤（优先保留清晰度更高、边角干扰更低版本）
-- 按类型归档到 `images/`、`videos/`、`captions/`
+- 按平台归档到 `twitter素材/`、`ig素材/`，并输出 `纯文案文本/`
+- 保存原始 `title` / `description` / `content`（含源 metadata 备份）
 - 自动发现 50 个垂类账号（X/IG）
 - 自动导出全网高热作品榜（视频/图文/文案）
 - GitHub Actions 定时后台挂机运行
@@ -45,7 +46,7 @@ crawl:
 ## 3) 本地快速验证（可选）
 
 ```bash
-python3 -m pip install -r requirements.txt
+bash scripts/bootstrap_linux.sh
 python3 src/pipeline.py --config config/accounts.example.yaml --data-root data
 ```
 
@@ -80,9 +81,9 @@ base64 -i cookies.txt | pbcopy
 
 工作流执行完成后，在 Artifacts 下载：
 
-- `data/archive/images/...`
-- `data/archive/videos/...`
-- `data/archive/captions/...`
+- `data/archive/twitter素材/...`
+- `data/archive/ig素材/...`
+- `data/archive/纯文案文本/...`
 - `data/archive/hot_content/top_works.json`（高热榜）
 - `data/archive/hot_content/top_works.csv`
 - `data/archive/hot_content/top_works.md`
