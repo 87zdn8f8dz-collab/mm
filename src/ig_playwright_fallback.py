@@ -4,13 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import time
 from pathlib import Path
-from typing import Dict, List, Tuple
-from urllib.parse import urlparse
-
-import requests
-from playwright.sync_api import sync_playwright
-
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote, urlparse
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -21,6 +19,7 @@ POST_LINK_PATTERN = re.compile(r"^https://www\.instagram\.com/(p|reel)/[^/]+/?$"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 IG_APP_ID = "936619743392459"
+PROFILE_INFO_ENDPOINT = "https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
 
 
 def parse_netscape_cookies(cookie_file: Path) -> List[Dict]:
@@ -108,15 +107,7 @@ def context_cookie_header(cookies: List[Dict]) -> str:
     return "; ".join(pairs)
 
 
-def extract_links_from_html(html: str) -> List[str]:
-    links: List[str] = []
-    for post_type, code in re.findall(r'"/(p|reel)/([A-Za-z0-9_-]{5,})/', html):
-        links.append(f"https://www.instagram.com/{post_type}/{code}/")
-    return links
-
-
-def collect_links_via_profile_api(account: str, cookie_header: str, max_items: int) -> List[str]:
-    url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={account}"
+def build_profile_headers(account: str, cookie_header: str = "") -> Dict[str, str]:
     headers = {
         "User-Agent": DEFAULT_UA,
         "X-IG-App-ID": IG_APP_ID,
@@ -125,48 +116,161 @@ def collect_links_via_profile_api(account: str, cookie_header: str, max_items: i
     }
     if cookie_header:
         headers["Cookie"] = cookie_header
-    try:
-        response = requests.get(url, headers=headers, timeout=25)
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
-        return []
+    return headers
 
-    user = ((payload.get("data") or {}).get("user") or {})
-    edges = ((user.get("edge_owner_to_timeline_media") or {}).get("edges") or [])
-    links: List[str] = []
-    for edge in edges:
-        node = edge.get("node") or {}
+
+def curl_get_bytes(url: str, headers: Dict[str, str], timeout_seconds: int) -> Tuple[int, bytes]:
+    cmd = [
+        "curl",
+        "-L",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        str(timeout_seconds),
+    ]
+    for key, value in headers.items():
+        cmd.extend(["-H", f"{key}: {value}"])
+    cmd.extend(["-w", "\n__STATUS__:%{http_code}\n", url])
+    try:
+        result = subprocess.run(cmd, check=False, capture_output=True)
+    except Exception:
+        return 0, b""
+    if result.returncode != 0:
+        return 0, b""
+    body = result.stdout or b""
+    marker = b"\n__STATUS__:"
+    index = body.rfind(marker)
+    if index == -1:
+        return 0, body
+    payload = body[:index]
+    status_line = body[index + len(marker) :].strip().decode("utf-8", errors="ignore")
+    try:
+        status_code = int(status_line)
+    except Exception:
+        status_code = 0
+    return status_code, payload
+
+
+def curl_get_text(url: str, headers: Dict[str, str], timeout_seconds: int) -> Tuple[int, str]:
+    status_code, payload = curl_get_bytes(url=url, headers=headers, timeout_seconds=timeout_seconds)
+    return status_code, payload.decode("utf-8", errors="ignore")
+
+
+def fetch_profile_payload(
+    account: str,
+    cookie_header: str,
+    retries: int = 3,
+    sleep_seconds: float = 2.2,
+) -> Optional[Dict]:
+    url = PROFILE_INFO_ENDPOINT.format(username=quote(account))
+    headers_without_cookie = build_profile_headers(account=account, cookie_header="")
+    headers_with_cookie = build_profile_headers(account=account, cookie_header=cookie_header) if cookie_header else None
+
+    for attempt in range(1, retries + 1):
+        for headers in [headers_without_cookie, headers_with_cookie]:
+            if headers is None:
+                continue
+            status_code, payload_text = curl_get_text(url=url, headers=headers, timeout_seconds=30)
+            if status_code == 200:
+                try:
+                    payload = json.loads(payload_text)
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    return payload
+            if status_code in {401, 403}:
+                continue
+            if status_code == 429:
+                time.sleep(sleep_seconds * attempt)
+                continue
+        time.sleep(min(1.2 * attempt, 4.0))
+    return None
+
+
+def extract_caption(node: Dict) -> str:
+    edges = ((node.get("edge_media_to_caption") or {}).get("edges") or [])
+    if not edges:
+        return ""
+    first = edges[0].get("node") or {}
+    return str(first.get("text") or "").strip()
+
+
+def build_media_jobs(account: str, nodes: List[Dict], max_items: int) -> List[Dict]:
+    jobs: List[Dict] = []
+    for node in nodes:
         shortcode = str(node.get("shortcode") or "").strip()
         if not shortcode:
             continue
-        links.append(f"https://www.instagram.com/p/{shortcode}/")
-        if len(links) >= max_items:
-            break
-    return links
+        caption = extract_caption(node)
+        taken_at = int(node.get("taken_at_timestamp") or 0)
+        children = ((node.get("edge_sidecar_to_children") or {}).get("edges") or [])
+
+        if children:
+            for index, edge in enumerate(children):
+                child = edge.get("node") or {}
+                media_url = str(child.get("video_url") or child.get("display_url") or "").strip()
+                if not media_url:
+                    continue
+                post_type = "reel" if bool(child.get("is_video")) else "p"
+                jobs.append(
+                    {
+                        "post_id": f"{shortcode}_{index + 1}",
+                        "post_url": f"https://www.instagram.com/{post_type}/{shortcode}/",
+                        "media_url": media_url,
+                        "title": caption,
+                        "description": caption,
+                        "content": caption,
+                        "timestamp": taken_at,
+                        "is_video": bool(child.get("is_video")),
+                    }
+                )
+                if len(jobs) >= max_items:
+                    return jobs
+            continue
+
+        media_url = str(node.get("video_url") or node.get("display_url") or "").strip()
+        if not media_url:
+            continue
+        post_type = "reel" if bool(node.get("is_video")) else "p"
+        jobs.append(
+            {
+                "post_id": shortcode,
+                "post_url": f"https://www.instagram.com/{post_type}/{shortcode}/",
+                "media_url": media_url,
+                "title": caption,
+                "description": caption,
+                "content": caption,
+                "timestamp": taken_at,
+                "is_video": bool(node.get("is_video")),
+            }
+        )
+        if len(jobs) >= max_items:
+            return jobs
+    return jobs
 
 
-def collect_post_links(page, account: str, max_items: int, cookie_header: str) -> Tuple[List[str], str]:
-    profile_url = f"https://www.instagram.com/{account}/"
-    page.goto(profile_url, wait_until="domcontentloaded", timeout=90000)
-    page.wait_for_timeout(2500)
-    current_url = page.url
-    html = page.content()
-    links: List[str] = []
-    for anchor in page.query_selector_all("a[href]"):
-        href = anchor.get_attribute("href") or ""
-        if not href:
-            continue
-        full = href if href.startswith("http") else f"https://www.instagram.com{href}"
-        if not POST_LINK_PATTERN.match(full):
-            continue
-        links.append(full.rstrip("/") + "/")
-    if len(links) < max_items:
-        links.extend(extract_links_from_html(html))
-    if len(links) < max_items:
-        links.extend(collect_links_via_profile_api(account=account, cookie_header=cookie_header, max_items=max_items))
-    deduped = list(dict.fromkeys(links))
-    return deduped[:max_items], current_url
+def collect_media_jobs(account: str, cookie_header: str, max_items: int) -> List[Dict]:
+    payload = fetch_profile_payload(account=account, cookie_header=cookie_header)
+    if not payload:
+        return []
+    user = ((payload.get("data") or {}).get("user") or {})
+    edges = ((user.get("edge_owner_to_timeline_media") or {}).get("edges") or [])
+    nodes = [edge.get("node") or {} for edge in edges]
+    return build_media_jobs(account=account, nodes=nodes, max_items=max_items)
+
+
+def sanitize_text(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text)[:5000]
+
+
+def download_media(media_url: str, headers: Dict[str, str]) -> Optional[bytes]:
+    status_code, payload_bytes = curl_get_bytes(url=media_url, headers=headers, timeout_seconds=45)
+    if status_code != 200:
+        return None
+    return payload_bytes
 
 
 def run(account: str, output_dir: Path, cookies_file: Path | None, max_items: int, headless: bool) -> int:
@@ -174,68 +278,47 @@ def run(account: str, output_dir: Path, cookies_file: Path | None, max_items: in
     cookies = parse_netscape_cookies(cookies_file) if cookies_file else []
     cookie_header = context_cookie_header(cookies)
     saved = 0
+    _ = headless
+    media_headers = {"User-Agent": DEFAULT_UA, "Accept": "*/*"}
+    if cookie_header:
+        media_headers["Cookie"] = cookie_header
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless)
-        context = browser.new_context(user_agent=DEFAULT_UA, viewport={"width": 1280, "height": 960})
-        if cookies:
-            context.add_cookies(cookies)
+    jobs = collect_media_jobs(account=account, cookie_header=cookie_header, max_items=max_items)
+    print(
+        f"[ig-fallback-debug] account={account} jobs={len(jobs)} "
+        f"cookies={'yes' if cookies else 'no'} mode=public-api"
+    )
 
-        page = context.new_page()
-        links, current_url = collect_post_links(page, account=account, max_items=max_items, cookie_header=cookie_header)
-        print(
-            f"[ig-fallback-debug] account={account} profile_url={current_url} links={len(links)} "
-            f"cookies={'yes' if cookies else 'no'}"
-        )
-        page.close()
+    for job in jobs:
+        media_url = str(job.get("media_url") or "").strip()
+        if not media_url:
+            continue
+        media_blob = download_media(media_url=media_url, headers=media_headers)
+        if not media_blob:
+            continue
 
-        session = requests.Session()
-        session.headers.update({"User-Agent": DEFAULT_UA})
-        if cookie_header:
-            session.headers["Cookie"] = cookie_header
+        post_id = str(job.get("post_id") or "unknown")
+        suffix = suffix_from_url(media_url)
+        media_path = output_dir / f"{post_id}{suffix}"
+        json_path = output_dir / f"{post_id}{suffix}.json"
 
-        for link in links:
-            post_page = context.new_page()
-            try:
-                post_page.goto(link, wait_until="domcontentloaded", timeout=90000)
-                post_page.wait_for_timeout(1000)
-                html = post_page.content()
-            except Exception:
-                post_page.close()
-                continue
-            post_page.close()
+        media_path.write_bytes(media_blob)
+        payload = {
+            "platform": "instagram",
+            "account": account,
+            "post_id": post_id,
+            "post_url": str(job.get("post_url") or f"https://www.instagram.com/{account}/"),
+            "title": sanitize_text(str(job.get("title") or "")),
+            "description": sanitize_text(str(job.get("description") or "")),
+            "content": sanitize_text(str(job.get("content") or "")),
+            "media_url": media_url,
+            "is_video": bool(job.get("is_video")),
+            "timestamp": int(job.get("timestamp") or 0),
+            "source": "ig_public_api_fallback",
+        }
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        saved += 1
 
-            meta = parse_meta(html)
-            media_url = meta.get("media_url", "")
-            if not media_url:
-                continue
-            post_id = urlparse(link).path.strip("/").split("/")[-1]
-            suffix = suffix_from_url(media_url)
-            media_path = output_dir / f"{post_id}{suffix}"
-            json_path = output_dir / f"{post_id}{suffix}.json"
-
-            try:
-                response = session.get(media_url, timeout=30)
-                response.raise_for_status()
-            except Exception:
-                continue
-
-            media_path.write_bytes(response.content)
-            payload = {
-                "platform": "instagram",
-                "account": account,
-                "post_id": post_id,
-                "post_url": link,
-                "title": meta.get("title", ""),
-                "description": meta.get("description", ""),
-                "content": meta.get("content", ""),
-                "media_url": media_url,
-                "source": "ig_playwright_fallback",
-            }
-            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            saved += 1
-
-        browser.close()
     return saved
 
 
