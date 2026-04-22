@@ -24,6 +24,7 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 PLATFORM_ARCHIVE_MAP = {
     "twitter": "twitter素材",
     "instagram": "ig素材",
+    "facebook": "facebook素材",
 }
 TEXT_ARCHIVE_DIR = "纯文案文本"
 
@@ -62,9 +63,20 @@ def load_config(config_path: Path) -> Dict:
 def normalize_accounts(raw_config: Dict) -> Dict[str, List[str]]:
     twitter_accounts = raw_config.get("twitter", []) or []
     instagram_accounts = raw_config.get("instagram", []) or []
+    facebook_accounts = raw_config.get("facebook", []) or []
+
+    def normalize(items: List) -> List[str]:
+        normalized: List[str] = []
+        for item in items:
+            text = str(item).strip().lstrip("@")
+            if text:
+                normalized.append(text)
+        return normalized
+
     return {
-        "twitter": [account.strip().lstrip("@") for account in twitter_accounts if account.strip()],
-        "instagram": [account.strip().lstrip("@") for account in instagram_accounts if account.strip()],
+        "twitter": normalize(twitter_accounts),
+        "instagram": normalize(instagram_accounts),
+        "facebook": normalize(facebook_accounts),
     }
 
 
@@ -73,6 +85,8 @@ def build_profile_url(platform: str, account: str) -> str:
         return f"https://x.com/{account}"
     if platform == "instagram":
         return f"https://www.instagram.com/{account}/posts/"
+    if platform == "facebook":
+        return f"https://www.facebook.com/{account}"
     raise ValueError(f"Unsupported platform: {platform}")
 
 
@@ -104,6 +118,13 @@ def platform_crawl_settings(crawl_config: Dict, platform: str) -> Dict[str, floa
         sleep_request_seconds = float(crawl_config.get("twitter_sleep_request_seconds", sleep_request_seconds))
         command_timeout_seconds = int(crawl_config.get("twitter_command_timeout_seconds", command_timeout_seconds))
         max_workers = int(crawl_config.get("twitter_max_workers", max_workers))
+    elif platform == "facebook":
+        max_items = int(crawl_config.get("facebook_max_items_per_account", max_items))
+        sleep_request_seconds = float(crawl_config.get("facebook_sleep_request_seconds", max(1.0, sleep_request_seconds)))
+        command_timeout_seconds = int(
+            crawl_config.get("facebook_command_timeout_seconds", max(command_timeout_seconds, 180))
+        )
+        max_workers = int(crawl_config.get("facebook_max_workers", max(1, min(3, max_workers))))
 
     return {
         "max_items": max_items,
@@ -137,6 +158,28 @@ def build_gallery_dl_command(
     if cookies_file and Path(cookies_file).exists():
         cmd.extend(["--cookies", cookies_file])
     return cmd
+
+
+def build_facebook_graph_command(
+    output_dir: Path,
+    account: str,
+    max_items: int,
+    sleep_request_seconds: float,
+) -> List[str]:
+    script_path = Path(__file__).with_name("facebook_graph_crawler.py")
+    python_bin = shutil.which("python3") or "python3"
+    return [
+        python_bin,
+        str(script_path),
+        "--account",
+        account,
+        "--output-dir",
+        str(output_dir),
+        "--max-items",
+        str(max_items),
+        "--sleep-seconds",
+        str(sleep_request_seconds),
+    ]
 
 
 def is_non_retryable_error(stderr: str) -> bool:
@@ -182,8 +225,10 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
     account_map = normalize_accounts(config)
     crawl_config = config.get("crawl", {}) or {}
     cookies_file = os.environ.get("GALLERY_DL_COOKIES_FILE")
+    facebook_access_token = os.environ.get("FACEBOOK_GRAPH_ACCESS_TOKEN", "").strip()
 
-    if shutil.which("gallery-dl") is None:
+    need_gallery_dl = bool(account_map.get("twitter") or account_map.get("instagram"))
+    if need_gallery_dl and shutil.which("gallery-dl") is None:
         raise RuntimeError("gallery-dl 未安装，请先执行: pip install -r requirements.txt")
 
     fallback_enabled = parse_bool(crawl_config.get("instagram_playwright_fallback_enabled", True), True)
@@ -193,20 +238,32 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
     tasks_by_platform: Dict[str, List[Tuple[str, str, List[str], str, int, int, float, int, bool, int, bool]]] = {
         "twitter": [],
         "instagram": [],
+        "facebook": [],
     }
     for platform, accounts in account_map.items():
+        if platform == "facebook" and accounts and not facebook_access_token:
+            print("[facebook][warn] 未检测到 FACEBOOK_GRAPH_ACCESS_TOKEN，跳过 Facebook 抓取。")
+            continue
         settings = platform_crawl_settings(crawl_config, platform)
         for account in accounts:
             output_dir = raw_root / platform / account
             output_dir.mkdir(parents=True, exist_ok=True)
             profile_url = build_profile_url(platform, account)
-            cmd = build_gallery_dl_command(
-                output_dir=output_dir,
-                profile_url=profile_url,
-                max_items=int(settings["max_items"]),
-                sleep_request_seconds=float(settings["sleep_request_seconds"]),
-                cookies_file=cookies_file,
-            )
+            if platform == "facebook":
+                cmd = build_facebook_graph_command(
+                    output_dir=output_dir,
+                    account=account,
+                    max_items=int(settings["max_items"]),
+                    sleep_request_seconds=float(settings["sleep_request_seconds"]),
+                )
+            else:
+                cmd = build_gallery_dl_command(
+                    output_dir=output_dir,
+                    profile_url=profile_url,
+                    max_items=int(settings["max_items"]),
+                    sleep_request_seconds=float(settings["sleep_request_seconds"]),
+                    cookies_file=cookies_file,
+                )
             tasks_by_platform.setdefault(platform, []).append(
                 (
                     platform,
@@ -296,7 +353,7 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
             return try_fallback(last_error)
         return try_fallback(last_error)
 
-    platform_order = ["twitter", "instagram"]
+    platform_order = ["twitter", "instagram", "facebook"]
     for platform in platform_order:
         tasks = tasks_by_platform.get(platform, [])
         if not tasks:

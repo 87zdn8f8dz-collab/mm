@@ -6,8 +6,16 @@ instagram:
   - nasa
   - natgeo
 
+facebook:
+  - nasa
+  - NatGeo
+
 crawl:
   max_items_per_account: 40
   sleep_request_seconds: 1.2
   command_timeout_seconds: 180
   max_workers: 4
+  facebook_max_items_per_account: 20
+  facebook_sleep_request_seconds: 1.0
+  facebook_command_timeout_seconds: 180
+  facebook_max_workers: 2

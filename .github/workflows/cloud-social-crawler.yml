@@ -103,6 +103,7 @@ jobs:
       - name: Run pipeline
         env:
           AUTO_DISCOVER: ${{ secrets.AUTO_DISCOVER }}
+          FACEBOOK_GRAPH_ACCESS_TOKEN: ${{ secrets.FACEBOOK_GRAPH_ACCESS_TOKEN }}
         run: |
           AUTO_DISCOVER_VALUE="${AUTO_DISCOVER:-1}"
           CONFIG_PATH="config/accounts.example.yaml"

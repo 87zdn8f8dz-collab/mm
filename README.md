@@ -1,11 +1,11 @@
 # Cloud Social Crawler
 
-批量抓取 Twitter(X) / Instagram 公开账号素材，并在云端自动完成：
+批量抓取 Twitter(X) / Instagram / Facebook 公开账号素材，并在云端自动完成：
 
 - 图片、视频、文案抓取
 - 去重（近重复 + 中心内容一致但边缘水印差异）
 - 水印冗余素材过滤（优先保留清晰度更高、边角干扰更低版本）
-- 按平台归档到 `twitter素材/`、`ig素材/`，并输出 `纯文案文本/`
+- 按平台归档到 `twitter素材/`、`ig素材/`、`facebook素材/`，并输出 `纯文案文本/`
 - 保存原始 `title` / `description` / `content`（含源 metadata 备份）
 - IG 账号自动预探测（优先选择可抓取账号）
 - IG 专属抓取参数（更长超时、更低并发、失败重试）
@@ -40,6 +40,8 @@ twitter:
   - nasa
 instagram:
   - natgeo
+facebook:
+  - nasa
 crawl:
   max_items_per_account: 40
   sleep_request_seconds: 1.2
@@ -49,6 +51,10 @@ crawl:
   instagram_sleep_request_seconds: 2.2
   instagram_command_timeout_seconds: 180
   instagram_max_workers: 2
+  facebook_max_items_per_account: 20
+  facebook_sleep_request_seconds: 1.0
+  facebook_command_timeout_seconds: 180
+  facebook_max_workers: 2
   instagram_playwright_fallback_enabled: true
   instagram_playwright_fallback_timeout_seconds: 300
   instagram_playwright_fallback_headless: true
@@ -74,6 +80,7 @@ python3 src/pipeline.py --config config/accounts.example.yaml --data-root data
 
 - `ACCOUNTS_YAML_B64`：账号配置文件 base64 后内容（可选）
 - `GALLERY_DL_COOKIES_B64`：cookies 文本（Netscape 格式）base64 后内容（可选但推荐）
+- `FACEBOOK_GRAPH_ACCESS_TOKEN`：Facebook Graph API Access Token（抓取 Facebook 必填）
 - `AUTO_DISCOVER`：是否开启自动发现账号（可选，默认 `1`）
 - `X_DISCOVERY_KEYWORDS`：X 关键词，`|` 分隔（可选）
 - `IG_DISCOVERY_TAGS`：IG 标签词，`|` 分隔（可选）
@@ -96,6 +103,7 @@ base64 -i cookies.txt | pbcopy
 
 - `data/archive/twitter素材/...`
 - `data/archive/ig素材/...`
+- `data/archive/facebook素材/...`
 - `data/archive/纯文案文本/...`
 - `data/archive/hot_content/top_works.json`（高热榜）
 - `data/archive/hot_content/top_works.csv`
@@ -107,6 +115,7 @@ base64 -i cookies.txt | pbcopy
 
 - 仅针对公开内容，需遵守平台条款与当地法律法规。
 - 若平台风控增强，建议提供有效 cookies 并降低频率。
+- Facebook 抓取走 Graph API，需配置 `FACEBOOK_GRAPH_ACCESS_TOKEN`。
 - 该方案是“工程可运行版”，不是平台官方 API 替代品。
 - 默认 `FAIL_ON_EMPTY=1`，当抓取结果为空会让任务失败，避免“表面成功、实际无数据”。
 
