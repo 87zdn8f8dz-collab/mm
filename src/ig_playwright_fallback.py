@@ -5,7 +5,7 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -20,6 +20,7 @@ DEFAULT_UA = (
 POST_LINK_PATTERN = re.compile(r"^https://www\.instagram\.com/(p|reel)/[^/]+/?$")
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+IG_APP_ID = "936619743392459"
 
 
 def parse_netscape_cookies(cookie_file: Path) -> List[Dict]:
@@ -71,6 +72,14 @@ def parse_meta(html: str) -> Dict[str, str]:
     description = find(r'<meta property="og:description" content="([^"]*)"')
     video_url = find(r'<meta property="og:video" content="([^"]*)"')
     image_url = find(r'<meta property="og:image" content="([^"]*)"')
+    if not video_url:
+        raw_video = find(r'"video_url":"([^"]+)"')
+        if raw_video:
+            video_url = raw_video.replace("\\u0026", "&").replace("\\/", "/")
+    if not image_url:
+        raw_image = find(r'"display_url":"([^"]+)"')
+        if raw_image:
+            image_url = raw_image.replace("\\u0026", "&").replace("\\/", "/")
     media_url = video_url or image_url
     return {
         "title": title,
@@ -99,11 +108,51 @@ def context_cookie_header(cookies: List[Dict]) -> str:
     return "; ".join(pairs)
 
 
-def collect_post_links(page, account: str, max_items: int) -> List[str]:
+def extract_links_from_html(html: str) -> List[str]:
+    links: List[str] = []
+    for post_type, code in re.findall(r'"/(p|reel)/([A-Za-z0-9_-]{5,})/', html):
+        links.append(f"https://www.instagram.com/{post_type}/{code}/")
+    return links
+
+
+def collect_links_via_profile_api(account: str, cookie_header: str, max_items: int) -> List[str]:
+    url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={account}"
+    headers = {
+        "User-Agent": DEFAULT_UA,
+        "X-IG-App-ID": IG_APP_ID,
+        "Accept": "*/*",
+        "Referer": f"https://www.instagram.com/{account}/",
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    try:
+        response = requests.get(url, headers=headers, timeout=25)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return []
+
+    user = ((payload.get("data") or {}).get("user") or {})
+    edges = ((user.get("edge_owner_to_timeline_media") or {}).get("edges") or [])
+    links: List[str] = []
+    for edge in edges:
+        node = edge.get("node") or {}
+        shortcode = str(node.get("shortcode") or "").strip()
+        if not shortcode:
+            continue
+        links.append(f"https://www.instagram.com/p/{shortcode}/")
+        if len(links) >= max_items:
+            break
+    return links
+
+
+def collect_post_links(page, account: str, max_items: int, cookie_header: str) -> Tuple[List[str], str]:
     profile_url = f"https://www.instagram.com/{account}/"
     page.goto(profile_url, wait_until="domcontentloaded", timeout=90000)
     page.wait_for_timeout(2500)
-    links = []
+    current_url = page.url
+    html = page.content()
+    links: List[str] = []
     for anchor in page.query_selector_all("a[href]"):
         href = anchor.get_attribute("href") or ""
         if not href:
@@ -112,8 +161,12 @@ def collect_post_links(page, account: str, max_items: int) -> List[str]:
         if not POST_LINK_PATTERN.match(full):
             continue
         links.append(full.rstrip("/") + "/")
+    if len(links) < max_items:
+        links.extend(extract_links_from_html(html))
+    if len(links) < max_items:
+        links.extend(collect_links_via_profile_api(account=account, cookie_header=cookie_header, max_items=max_items))
     deduped = list(dict.fromkeys(links))
-    return deduped[:max_items]
+    return deduped[:max_items], current_url
 
 
 def run(account: str, output_dir: Path, cookies_file: Path | None, max_items: int, headless: bool) -> int:
@@ -129,7 +182,11 @@ def run(account: str, output_dir: Path, cookies_file: Path | None, max_items: in
             context.add_cookies(cookies)
 
         page = context.new_page()
-        links = collect_post_links(page, account=account, max_items=max_items)
+        links, current_url = collect_post_links(page, account=account, max_items=max_items, cookie_header=cookie_header)
+        print(
+            f"[ig-fallback-debug] account={account} profile_url={current_url} links={len(links)} "
+            f"cookies={'yes' if cookies else 'no'}"
+        )
         page.close()
 
         session = requests.Session()
