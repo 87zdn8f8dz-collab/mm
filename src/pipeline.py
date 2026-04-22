@@ -76,6 +76,14 @@ def build_profile_url(platform: str, account: str) -> str:
     raise ValueError(f"Unsupported platform: {platform}")
 
 
+def parse_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def platform_crawl_settings(crawl_config: Dict, platform: str) -> Dict[str, float]:
     max_items = int(crawl_config.get("max_items_per_account", 40))
     sleep_request_seconds = float(crawl_config.get("sleep_request_seconds", 1.2))
@@ -143,6 +151,33 @@ def is_non_retryable_error(stderr: str) -> bool:
     return any(marker in error_text for marker in markers)
 
 
+def run_instagram_playwright_fallback(
+    account: str,
+    output_dir: Path,
+    cookies_file: Optional[str],
+    max_items: int,
+    timeout_seconds: int,
+    headless: bool,
+) -> subprocess.CompletedProcess:
+    script_path = Path(__file__).with_name("ig_playwright_fallback.py")
+    python_bin = shutil.which("python3") or "python3"
+    cmd = [
+        python_bin,
+        str(script_path),
+        "--account",
+        account,
+        "--output-dir",
+        str(output_dir),
+        "--max-items",
+        str(max_items),
+    ]
+    if headless:
+        cmd.append("--headless")
+    if cookies_file and Path(cookies_file).exists():
+        cmd.extend(["--cookies-file", cookies_file])
+    return run_cmd(cmd, check=False, timeout=timeout_seconds)
+
+
 def crawl_accounts(raw_root: Path, config: Dict) -> None:
     account_map = normalize_accounts(config)
     crawl_config = config.get("crawl", {}) or {}
@@ -151,7 +186,11 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
     if shutil.which("gallery-dl") is None:
         raise RuntimeError("gallery-dl 未安装，请先执行: pip install -r requirements.txt")
 
-    tasks_by_platform: Dict[str, List[Tuple[str, str, List[str], str, int, int, float]]] = {
+    fallback_enabled = parse_bool(crawl_config.get("instagram_playwright_fallback_enabled", True), True)
+    fallback_timeout_seconds = int(crawl_config.get("instagram_playwright_fallback_timeout_seconds", 300))
+    fallback_headless = parse_bool(crawl_config.get("instagram_playwright_fallback_headless", True), True)
+
+    tasks_by_platform: Dict[str, List[Tuple[str, str, List[str], str, int, int, float, int, bool, int, bool]]] = {
         "twitter": [],
         "instagram": [],
     }
@@ -177,17 +216,60 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
                     int(settings["command_timeout_seconds"]),
                     int(settings["retries"]),
                     float(settings["retry_backoff_seconds"]),
+                    int(settings["max_items"]),
+                    bool(fallback_enabled),
+                    int(fallback_timeout_seconds),
+                    bool(fallback_headless),
                 )
             )
 
     total_accounts = sum(len(items) for items in tasks_by_platform.values())
     print(f"[crawl] total_accounts={total_accounts}")
 
-    def run_one(task: Tuple[str, str, List[str], str, int, int, float]) -> Tuple[str, str]:
-        platform, account, cmd, profile_url, command_timeout_seconds, retries, retry_backoff_seconds = task
+    def run_one(task: Tuple[str, str, List[str], str, int, int, float, int, bool, int, bool]) -> Tuple[str, str]:
+        (
+            platform,
+            account,
+            cmd,
+            profile_url,
+            command_timeout_seconds,
+            retries,
+            retry_backoff_seconds,
+            max_items,
+            task_fallback_enabled,
+            task_fallback_timeout_seconds,
+            task_fallback_headless,
+        ) = task
         header = f"[crawl] {platform}/{account} -> {profile_url}"
         last_error = ""
         attempts = max(1, retries + 1)
+
+        def try_fallback(message: str) -> Tuple[str, str]:
+            if platform != "instagram" or not task_fallback_enabled:
+                return ("warn", f"{header}\n{message}")
+            output_dir = raw_root / platform / account
+            fallback_result = run_instagram_playwright_fallback(
+                account=account,
+                output_dir=output_dir,
+                cookies_file=cookies_file,
+                max_items=max_items,
+                timeout_seconds=task_fallback_timeout_seconds,
+                headless=task_fallback_headless,
+            )
+            fallback_output = (fallback_result.stdout or "").strip()[-1200:]
+            fallback_error = (fallback_result.stderr or "").strip()[-1200:]
+            if fallback_result.returncode == 0:
+                detail = f"[info] fallback成功: instagram/{account}"
+                if fallback_output:
+                    detail = f"{detail}\n{fallback_output}"
+                return ("ok", f"{header}\n{message}\n{detail}")
+            detail = f"[warn] fallback失败: instagram/{account}"
+            if fallback_output:
+                detail = f"{detail}\n{fallback_output}"
+            if fallback_error:
+                detail = f"{detail}\n{fallback_error}"
+            return ("warn", f"{header}\n{message}\n{detail}")
+
         for attempt in range(1, attempts + 1):
             try:
                 result = run_cmd(cmd, check=False, timeout=command_timeout_seconds)
@@ -196,7 +278,7 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
                 if attempt < attempts:
                     time.sleep(retry_backoff_seconds * attempt)
                     continue
-                return ("warn", f"{header}\n{last_error}")
+                return try_fallback(last_error)
 
             if result.returncode == 0:
                 if attempt == 1:
@@ -211,8 +293,8 @@ def crawl_accounts(raw_root: Path, config: Dict) -> None:
             if attempt < attempts and not is_non_retryable_error(error_tail):
                 time.sleep(retry_backoff_seconds * attempt)
                 continue
-            return ("warn", f"{header}\n{last_error}")
-        return ("warn", f"{header}\n{last_error}")
+            return try_fallback(last_error)
+        return try_fallback(last_error)
 
     platform_order = ["twitter", "instagram"]
     for platform in platform_order:

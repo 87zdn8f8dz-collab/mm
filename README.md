@@ -10,6 +10,7 @@
 - IG 账号自动预探测（优先选择可抓取账号）
 - IG 专属抓取参数（更长超时、更低并发、失败重试）
 - IG 抓取优先走 `/posts/` 路径，减少账号查询风控失败
+- IG 抓取失败自动触发 Playwright 备用链路（浏览器兜底）
 - 自动发现 50 个垂类账号（X/IG）
 - 自动导出全网高热作品榜（视频/图文/文案）
 - GitHub Actions 定时后台挂机运行
@@ -48,6 +49,9 @@ crawl:
   instagram_sleep_request_seconds: 2.2
   instagram_command_timeout_seconds: 180
   instagram_max_workers: 2
+  instagram_playwright_fallback_enabled: true
+  instagram_playwright_fallback_timeout_seconds: 300
+  instagram_playwright_fallback_headless: true
   retries: 1
   retry_backoff_seconds: 4
 ```
