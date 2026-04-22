@@ -28,7 +28,13 @@ def parse_netscape_cookies(cookie_file: Path) -> List[Dict]:
         return cookies
     for raw_line in cookie_file.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+        http_only = False
+        if line.startswith("#HttpOnly_"):
+            http_only = True
+            line = line[len("#HttpOnly_") :]
+        elif line.startswith("#"):
             continue
         parts = line.split("\t")
         if len(parts) != 7:
@@ -37,15 +43,18 @@ def parse_netscape_cookies(cookie_file: Path) -> List[Dict]:
         if "instagram.com" not in domain:
             continue
         normalized_domain = domain if domain.startswith(".") else f".{domain}"
+        expires_value = -1
+        if expires.lstrip("-").isdigit():
+            expires_value = float(expires)
         cookies.append(
             {
                 "name": name,
                 "value": value,
                 "domain": normalized_domain,
                 "path": path or "/",
-                "httpOnly": False,
+                "httpOnly": http_only,
                 "secure": secure.upper() == "TRUE",
-                "expires": float(expires) if expires.isdigit() else -1,
+                "expires": expires_value,
             }
         )
     return cookies
